@@ -453,8 +453,8 @@ void ckp_signal(void *pvParameter)
     
     gpio_pad_select_gpio(2);
 
-    int on=0;
-    int i;
+    //int on=0;
+    //int i;
     /* Set the GPIO as a push/pull output */
     gpio_set_direction(2, GPIO_MODE_OUTPUT);
    
