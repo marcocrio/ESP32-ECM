@@ -10,6 +10,7 @@
 #include "sdkconfig.h"
 #include "freertos/queue.h"
 #include "esp_int_wdt.h"
+#include "esp_task_wdt.h"
 
 //PWM
 #include "driver/ledc.h"
@@ -34,7 +35,6 @@
 
 
 static const char *TAG = "SPIFFS";
-
 
 // ================== Global Variables Definition ==================//
    
@@ -348,6 +348,7 @@ void main_Readings(void *pvParameter)
     dac_output_enable(DAC_CHANNEL_1);//pressure output
     dac_output_enable(DAC_CHANNEL_2);//RPMS output
     int i; 
+    esp_task_wdt_add(NULL);
 
     while(1)
     {
@@ -360,7 +361,8 @@ void main_Readings(void *pvParameter)
             TPS += adc1_get_raw(ADC1_CHANNEL_4); 
         } 
         TPS= TPS/ 1000;  
-        printf("TPS ADC: %d \n",TPS); 
+        printf("TPS ADC: %d \n",TPS);
+        ets_delay_us(10); //sincronizes main reading task and CKP signal creation
         
         //Get TPS Voltage
         TPSV = TPS * 0.00449658;  
@@ -431,12 +433,13 @@ void main_Readings(void *pvParameter)
 
         setUpPWM();
 
+
         //Sincronization delay
         ets_delay_us(10); //sincronizes main reading task and CKP signal creation
+        esp_task_wdt_reset();
 
     }
 }
-
 
 
 
@@ -452,6 +455,7 @@ void ckp_signal(void *pvParameter)
     ets_delay_us(10); // sincronization with Main Readings task
     
     gpio_pad_select_gpio(2);
+    esp_task_wdt_add(NULL);// subscription to WDT
 
     //int on=0;
     //int i;
@@ -682,9 +686,9 @@ void ckp_signal(void *pvParameter)
         ets_delay_us(ckpPWM);
         gpio_set_level(2, 0);
 
-        
+        esp_task_wdt_reset();
     }
-}
+};
 
 
 
@@ -704,9 +708,40 @@ void setADC()
     adc1_config_channel_atten(ADC1_CHANNEL_4, ADC_ATTEN_DB_11 ); 
 } 
 
+//*****************************************************************************************//
+//*****************************************************************************************//
+//*************************************** DEBUG ********************************************//
+//*****************************************************************************************//
+//*****************************************************************************************//
 
 
 
+void clr_scrn(void *pvParameter)
+{
+
+    long i=0;
+    int b=0;
+    esp_task_wdt_add(NULL);
+    while(1){
+
+        
+        if(i>100000){
+            b=b+10;
+            printf("\033[2J");
+            printf("\033[H");
+            printf("%d\n",b);
+            i=0;
+        }else{
+            i++;
+        }
+
+
+
+        esp_task_wdt_reset();
+
+    }
+
+}
 
 
 //*****************************************************************************************//
@@ -718,6 +753,7 @@ void setADC()
 
 void app_main(void){
 
+    esp_task_wdt_init(30,0);// Watchdog timer settings it lasts 30 minutes and the 0 indicates that there will not be error.
     setADC(); //Set up ADC at 10 bit
     vfsSetup(); //initializes Virtual File System
     rdfile(); //Reads VE table
@@ -727,6 +763,8 @@ void app_main(void){
     xTaskCreate(&ckp_signal, "ckp_signal", 2048, NULL, 5, NULL); 
     xTaskCreate(&inj_pwm, "inj_pwm", 2048, NULL, 5, NULL); 
     //xTaskCreate(&read_file, "read_file", 4096, NULL, 6, NULL);
+
+    //xTaskCreate(&clr_scrn, "clr_srcn", 2048, NULL, 6, NULL); 
 
     return;
 
