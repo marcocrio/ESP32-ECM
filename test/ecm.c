@@ -12,11 +12,28 @@
 #include "esp_int_wdt.h"
 #include "esp_task_wdt.h"
 
+
+
+//sntp (get time over the air)
+#include <time.h>
+#include <sys/time.h>
+#include "freertos/event_groups.h"
+#include "esp_system.h"
+#include "esp_wifi.h"
+#include "esp_event_loop.h"
+#include "esp_attr.h"
+#include "esp_sleep.h"
+#include "nvs_flash.h"
+
+#include "lwip/err.h"
+#include "lwip/apps/sntp.h"
+
+
 //PWM
 #include "driver/ledc.h"
 
 //spiffs
-#include <string.h>
+//#include <string.h>
 #include <sys/unistd.h>
 #include <sys/stat.h>
 #include "esp_err.h"
@@ -28,17 +45,60 @@
 #include "rom/ets_sys.h"
 
 //DAC ADC and PWM
-#include <driver/ledc.h> 
+//#include <driver/ledc.h> 
 #include <driver/adc.h> 
 #include <driver/dac.h> 
 
 
 
-static const char *TAG = "SPIFFS";
+
 
 // ================== Global Variables Definition ==================//
    
+//-----------------LOG Constans----------------//
+
+
+    static const char *SYS = "SYSTEM";
+    static const char *SPFS = "SPIFFS";
+    static const char *SNTP = "SNTP";
+
+
+
+//------------------SNTP-----------------------//
+
+    /* Simple WiFi configuration that you can set via
+    'make menuconfig'.
+    If you'd rather not, just change the below entries to strings with
+    the config you want - ie #define EXAMPLE_WIFI_SSID "mywifissid"
+    */
+    #define EXAMPLE_WIFI_SSID "Monkey-Pass" //network
+    #define EXAMPLE_WIFI_PASS "free bananas" //password
+
+    /* FreeRTOS event group to signal when we are connected & ready to make a request */
+    static EventGroupHandle_t wifi_event_group;
+
+
+    /* The event group allows multiple bits for each event,
+    but we only care about one event - are we connected
+    to the Access Point with an IP? */
+    const int CONNECTED_BIT = BIT0;
+
+
+    /* Variable holding number of times ESP32 restarted since first boot.
+    * It is placed into RTC memory using RTC_DATA_ATTR and
+    * maintains its value when ESP32 wakes from deep sleep.
+    */
+    RTC_DATA_ATTR static int boot_count = 0;
+
+    time_t now;
+    struct tm timeinfo;
+
+    char strftime_buf[64];
+
  //-----------------VE Table-----------------//  
+
+ 
+
     //VE Headers
     int rpm[12]={0};
     int pre[16]={0};
@@ -73,6 +133,92 @@ static const char *TAG = "SPIFFS";
     float injDuty;
     float injPulseTime;
     float injCycle;
+
+//*****************************************************************************************//
+//*****************************************************************************************//
+//************************************* SNTP  *****************************************//
+//*****************************************************************************************//
+//*****************************************************************************************//
+
+
+
+    static void obtain_time(void);
+    static void initialize_sntp(void);
+    static void initialize_wifi(void);
+    static esp_err_t event_handler(void *ctx, system_event_t *event);
+
+    static void obtain_time(void)
+    {
+        ESP_ERROR_CHECK( nvs_flash_init() );
+        initialize_wifi();
+        xEventGroupWaitBits(wifi_event_group, CONNECTED_BIT,
+                            false, true, portMAX_DELAY);
+        initialize_sntp();
+
+        // wait for time to be set
+        time_t now = 0;
+        struct tm timeinfo = { 0 };
+        int retry = 0;
+        const int retry_count = 10;
+        while(timeinfo.tm_year < (2016 - 1900) && ++retry < retry_count) {
+            ESP_LOGI(SNTP, "Waiting for system time to be set... (%d/%d)", retry, retry_count);
+            vTaskDelay(2000 / portTICK_PERIOD_MS);
+            time(&now);
+            localtime_r(&now, &timeinfo);
+        }
+
+        ESP_ERROR_CHECK( esp_wifi_stop() );
+    }
+
+    static void initialize_sntp(void)
+    {
+        ESP_LOGI(SNTP, "Initializing SNTP");
+        sntp_setoperatingmode(SNTP_OPMODE_POLL);
+        sntp_setservername(0, "pool.ntp.org");
+        sntp_init();
+    }
+
+    static void initialize_wifi(void)
+    {
+        tcpip_adapter_init();
+        wifi_event_group = xEventGroupCreate();
+        ESP_ERROR_CHECK( esp_event_loop_init(event_handler, NULL) );
+        wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+        ESP_ERROR_CHECK( esp_wifi_init(&cfg) );
+        ESP_ERROR_CHECK( esp_wifi_set_storage(WIFI_STORAGE_RAM) );
+        wifi_config_t wifi_config = {
+            .sta = {
+                .ssid = EXAMPLE_WIFI_SSID,
+                .password = EXAMPLE_WIFI_PASS,
+            },
+        };
+        ESP_LOGI(SNTP, "Setting WiFi configuration SSID %s...", wifi_config.sta.ssid);
+        ESP_ERROR_CHECK( esp_wifi_set_mode(WIFI_MODE_STA) );
+        ESP_ERROR_CHECK( esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config) );
+        ESP_ERROR_CHECK( esp_wifi_start() );
+    }
+
+    static esp_err_t event_handler(void *ctx, system_event_t *event)
+    {
+        switch(event->event_id) {
+        case SYSTEM_EVENT_STA_START:
+            esp_wifi_connect();
+            break;
+        case SYSTEM_EVENT_STA_GOT_IP:
+            xEventGroupSetBits(wifi_event_group, CONNECTED_BIT);
+            break;
+        case SYSTEM_EVENT_STA_DISCONNECTED:
+            /* This is a workaround as ESP32 WiFi libs don't currently
+            auto-reassociate. */
+            esp_wifi_connect();
+            xEventGroupClearBits(wifi_event_group, CONNECTED_BIT);
+            break;
+        default:
+            break;
+        }
+        return ESP_OK;
+    }
+
 
 //*****************************************************************************************//
 //*****************************************************************************************//
@@ -128,12 +274,12 @@ void rdfile(){
     int i,j=0;
     vTaskDelay(1000 / portTICK_PERIOD_MS);
     // Open renamed file for reading
-    ESP_LOGI(TAG, "Reading file");
+    ESP_LOGI(SPFS, "Reading file");
 
     // FILE* f = fopen("/spiffs/hello.txt", "r");
     FILE* f = fopen("/spiffs/vetable.csv", "r");
     if (f == NULL) {
-        ESP_LOGE(TAG, "Failed to open file for reading");
+        ESP_LOGE(SPFS, "Failed to open file for reading");
         return;
     }
     char line[150];
@@ -178,17 +324,17 @@ void rdfile(){
 
     //Print VE Table
 
-    ESP_LOGI(TAG, "Pressure:");
+    ESP_LOGI(SPFS, "Pressure:");
     for(i=0; i< 16; i++){
         printf("%d ",pre[i]);
     }printf("\n");
 
-    ESP_LOGI(TAG,"RPM:");
+    ESP_LOGI(SPFS,"RPM:");
     for(i=0; i< 12; i++){
         printf("%d ",rpm[i]);
     }printf("\n");
 
-    ESP_LOGI(TAG,"Volumetric Efficiency:");
+    ESP_LOGI(SPFS,"Volumetric Efficiency:");
     
     j=0;
     while(j<12){
@@ -218,7 +364,7 @@ void rdfile(){
 
 
 void vfsSetup(){
-    ESP_LOGI(TAG, "\n\nInitializing SPIFFS");
+    ESP_LOGI(SPFS, "\n\nInitializing SPIFFS");
     
     esp_vfs_spiffs_conf_t conf = {
       .base_path = "/spiffs",
@@ -233,11 +379,11 @@ void vfsSetup(){
 
     if (ret != ESP_OK) {
         if (ret == ESP_FAIL) {
-            ESP_LOGE(TAG, "Failed to mount or format filesystem");
+            ESP_LOGE(SPFS, "Failed to mount or format filesystem");
         } else if (ret == ESP_ERR_NOT_FOUND) {
-            ESP_LOGE(TAG, "Failed to find SPIFFS partition");
+            ESP_LOGE(SPFS, "Failed to find SPIFFS partition");
         } else {
-            ESP_LOGE(TAG, "Failed to initialize SPIFFS (%s)", esp_err_to_name(ret));
+            ESP_LOGE(SPFS, "Failed to initialize SPIFFS (%s)", esp_err_to_name(ret));
         }
         return;
     }
@@ -248,9 +394,9 @@ void vfsSetup(){
     size_t total = 0, used = 0;
     ret = esp_spiffs_info(NULL, &total, &used);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to get SPIFFS partition information (%s)", esp_err_to_name(ret));
+        ESP_LOGE(SPFS, "Failed to get SPIFFS partition information (%s)", esp_err_to_name(ret));
     } else {
-        ESP_LOGI(TAG, "Partition size: total: %d, used: %d", total, used);
+        ESP_LOGI(SPFS, "Partition size: total: %d, used: %d", total, used);
     }
     
 }
@@ -271,7 +417,7 @@ float power(float num){
 void interpolation(int hpa, int revs){
 
     // vTaskDelay(3000/portTICK_PERIOD_MS);
-    // ESP_LOGI(TAG, "Initializing Interpoltion\n");
+    // ESP_LOGI(SPFS, "Initializing Interpoltion\n");
     // printf("Pressure: %d RPMS: %d\n",hpa,revs);
     int i=0,j=0;
     
@@ -353,9 +499,14 @@ void main_Readings(void *pvParameter)
     while(1)
     {
        
-        ESP_LOGI(TAG, "Readings\n");
+        ESP_LOGI(SYS, "Readings:\n");
+        
+        //get timestamp
+        strftime(strftime_buf, sizeof(strftime_buf), "%c", &timeinfo);
+        ESP_LOGI(SNTP, "%s\n", strftime_buf);
+       
        //Get the read from TPS
-       TPS =0; 
+        TPS =0; 
        for(i=0 ; i<1000; i++)
         { 
             TPS += adc1_get_raw(ADC1_CHANNEL_4); 
@@ -430,6 +581,7 @@ void main_Readings(void *pvParameter)
         printf("Frequency: %.4f\n",freq);
         // printf("Injecor Pulse Time: %.4fms\n",injPulseTime);
         printf("Injector Duty Cyle: %.4f\n",injDuty);
+
 
         setUpPWM();
 
@@ -694,8 +846,6 @@ void ckp_signal(void *pvParameter)
 
 
 
-
-
 //*****************************************************************************************//
 //*****************************************************************************************//
 //************************************* ADC Setup *****************************************//
@@ -753,11 +903,41 @@ void clr_scrn(void *pvParameter)
 
 void app_main(void){
 
+    ESP_LOGE(SYS, "System has booted up: %d", boot_count);
+    ++boot_count;
+    ESP_LOGI(SYS, "Boot count: %d\n", boot_count);
+
+    //----------------Get current time---------------//
+ 
+    time(&now);
+    localtime_r(&now, &timeinfo);
+    // Is time set? If not, tm_year will be (1970 - 1900).
+    if (timeinfo.tm_year < (2016 - 1900)) {
+        ESP_LOGI(SNTP, "Time is not set yet. Connecting to WiFi and getting time over NTP.");
+        obtain_time();
+        // update 'now' variable with current time
+        time(&now);
+    }
+    
+
+    // Set timezone to Eastern Standard Time and print local time
+    setenv("TZ", "EST5EDT,M3.2.0/2,M11.1.0", 1);
+    tzset();
+    localtime_r(&now, &timeinfo);
+
+    //---------------initialize peripherals-----------/
+
+
+
     esp_task_wdt_init(30,0);// Watchdog timer settings it lasts 30 minutes and the 0 indicates that there will not be error.
     setADC(); //Set up ADC at 10 bit
     vfsSetup(); //initializes Virtual File System
     rdfile(); //Reads VE table
     setUpPWM(); //Setsup up PWM
+
+
+
+    //------------create tasks--------------//
 
     xTaskCreate(&main_Readings, "main_Readings", 2048, NULL, 5, NULL);
     xTaskCreate(&ckp_signal, "ckp_signal", 2048, NULL, 5, NULL); 
