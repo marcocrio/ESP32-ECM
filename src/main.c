@@ -68,19 +68,21 @@ static const char *TAG = "SPIFFS";
     float airmass; 
     float afr=14.7; //airfuel ratio (**needs to be improved, get from tables from book)  
 
-    //Fuel Injector
+//--------------Fuel Injector---------------//
     float freq;
     float injDuty;
     float injPulseTime;
     float injCycle;
+
+//---------------- Buffer ------------------//
+    float buff[9];
+    #define TPSb 0
 
 //*****************************************************************************************//
 //*****************************************************************************************//
 //************************************* PWM  *****************************************//
 //*****************************************************************************************//
 //*****************************************************************************************//
-
-
 
 void inj_pwm(void *pvParameter){
 
@@ -93,13 +95,12 @@ void inj_pwm(void *pvParameter){
 
 }
 
-
 void setUpPWM()
 {   
     ledc_timer_config_t timerConfig;
     timerConfig.duty_resolution =LEDC_TIMER_10_BIT ;
     timerConfig.timer_num = LEDC_TIMER_0;
-    timerConfig.freq_hz = ckpPWM*44;
+    timerConfig.freq_hz = 10;
     timerConfig.speed_mode = LEDC_HIGH_SPEED_MODE;
     ledc_timer_config(&timerConfig);
 
@@ -113,14 +114,11 @@ void setUpPWM()
     ledc_channel_config(&tChaConfig);
 }
 
-
-
 //*****************************************************************************************//
 //*****************************************************************************************//
 //********************************** READ VE TABLE ****************************************//
 //*****************************************************************************************//
 //*****************************************************************************************//
-
 
 void rdfile(){
     char* token;
@@ -208,14 +206,11 @@ void rdfile(){
 
 }
 
-
-
 //*****************************************************************************************//
 //*****************************************************************************************//
 //***************************** Virtual File System Init **********************************//
 //*****************************************************************************************//
 //*****************************************************************************************//
-
 
 void vfsSetup(){
     ESP_LOGI(TAG, "\n\nInitializing SPIFFS");
@@ -261,12 +256,9 @@ void vfsSetup(){
 //*****************************************************************************************//
 //*****************************************************************************************//
 
-
-
 float power(float num){
     return num*num;
 }
-
 
 void interpolation(int hpa, int revs){
 
@@ -333,14 +325,11 @@ void interpolation(int hpa, int revs){
 
 };
 
-
-
 //*****************************************************************************************//
 //*****************************************************************************************//
 //******************************* Readings Collection *************************************//
 //*****************************************************************************************//
 //*****************************************************************************************//
-
 
 void main_Readings(void *pvParameter)
 {
@@ -361,17 +350,18 @@ void main_Readings(void *pvParameter)
             TPS += adc1_get_raw(ADC1_CHANNEL_4); 
         } 
         TPS= TPS/ 1000;  
-        printf("TPS ADC: %d \n",TPS);
+        // printf("TPS ADC: %d \n",TPS);
+        
         ets_delay_us(10); //sincronizes main reading task and CKP signal creation
         
         //Get TPS Voltage
         TPSV = TPS * 0.00449658;  
-        printf("TPS Voltage: %.4f (V)\n",TPSV); 
+        //printf("TPS Voltage: %.4f (V)\n",TPSV); 
 
         //Get TPS Percentage
         TPS_Percentage = (TPSV/4.6)*100; //originally voltage/4.6*100 changed to pressure/4.6 
-        printf("TPS%%: %.4f%%\n",TPS_Percentage); 
-
+        //printf("TPS%%: %.4f%%\n",TPS_Percentage); 
+        buff[TPSb]= TPS_Percentage;
 
         //Get MAP Reading on TPS% relation
         if (TPS_Percentage<11)
@@ -379,10 +369,8 @@ void main_Readings(void *pvParameter)
         else
         pressure = -2.15*(TPS_Percentage-20)+755;
 
-
-        printf("pressure: %.4f (kPa)\n",pressure); 
+        //printf("pressure: %.4f (kPa)\n",pressure); 
         dac_output_voltage(DAC_CHANNEL_1, (pressure-1022)*(-0.58));//kpascual 
-        
         
         //Get RPM Based on TPS% relation
         if(TPS_Percentage<10)
@@ -392,10 +380,9 @@ void main_Readings(void *pvParameter)
         else
             RPM= 200*(TPS_Percentage-10)+2000; 
 
-        printf("RPM: %.4f\n",RPM);  
+        //printf("RPM: %.4f\n",RPM);  
         
         dac_output_voltage(DAC_CHANNEL_2, (RPM-1200)*0.0375);//RPMS output
-
 
         //Get CKP PWM based on RPM Relation
         if(RPM == 0) 
@@ -403,23 +390,22 @@ void main_Readings(void *pvParameter)
         else 
             ckpPWM = (60/(44*RPM))*1000000;
 
-        printf("ckpPWM: %.4f us\n",ckpPWM);
+        //printf("ckpPWM: %.4f us\n",ckpPWM);
 
        
 
         //Volumetric Efficiency 
         interpolation(pressure,RPM); //Gets the exact VE value
-        printf("Volumetric Efficiency: %.2f\n",VE_Value);
+        //printf("Volumetric Efficiency: %.2f\n",VE_Value);
 
 
         //Airmass
         airmass = (Vengine*VE_Value*pressure)/(UniGas*IAT*cylinder); 
-        printf("airmass: %.4f (g/cyl)\n",airmass);
+        //printf("airmass: %.4f (g/cyl)\n",airmass);
 
         //Fuelmass
         fuelmass = (airmass)/(afr); 
-        printf("fuelmass: %.4f (g/cyl)\n\n",fuelmass); 
-
+       // printf("fuelmass: %.4f (g/cyl)\n\n",fuelmass); 
 
         //Fuel injector
         freq=ckpPWM*44;
@@ -427,11 +413,18 @@ void main_Readings(void *pvParameter)
         // injPulseTime= (fuelmass/staticFlow + openTime)*1000; //the open time
         injDuty = TPS;
 
-        printf("Frequency: %.4f\n",freq);
+        //printf("Frequency: %.4f\n",freq);
         // printf("Injecor Pulse Time: %.4fms\n",injPulseTime);
-        printf("Injector Duty Cyle: %.4f\n",injDuty);
+        //printf("Injector Duty Cyle: %.4f\n",injDuty);
 
         setUpPWM();
+
+        // Put readings on Buffer
+        // float buff[9]={TPS_Percentage,ckpPWM,pressure,RPM,freq,VE_Value,airmass,fuelmass,injDuty};
+
+        for(i=0;i<9;i++){
+            printf("buff[%d]: %.4f\n",i,buff[i]);
+        }
 
 
         //Sincronization delay
