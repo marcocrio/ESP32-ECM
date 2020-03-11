@@ -77,6 +77,14 @@ static const char *TAG = "SPIFFS";
 //---------------- Buffer ------------------//
     float buff[9];
     #define TPSb 0
+    #define CKPb 1
+    #define MAPb 2
+    #define RPMb 3
+    #define Freqb 4
+    #define VEb  5
+    #define Airmassb 6
+    #define Fuelmassb 7
+    #define DutyCicleb 8
 
 //*****************************************************************************************//
 //*****************************************************************************************//
@@ -368,6 +376,7 @@ void main_Readings(void *pvParameter)
         pressure = -20*(TPS_Percentage)+1022;
         else
         pressure = -2.15*(TPS_Percentage-20)+755;
+        buff[MAPb] = pressure;
 
         //printf("pressure: %.4f (kPa)\n",pressure); 
         dac_output_voltage(DAC_CHANNEL_1, (pressure-1022)*(-0.58));//kpascual 
@@ -379,7 +388,7 @@ void main_Readings(void *pvParameter)
             RPM= 10*(TPS_Percentage-60)+8000;
         else
             RPM= 200*(TPS_Percentage-10)+2000; 
-
+        buff[RPMb]=RPM;
         //printf("RPM: %.4f\n",RPM);  
         
         dac_output_voltage(DAC_CHANNEL_2, (RPM-1200)*0.0375);//RPMS output
@@ -389,22 +398,25 @@ void main_Readings(void *pvParameter)
             ckpPWM = (60/(44*1))*1000000;
         else 
             ckpPWM = (60/(44*RPM))*1000000;
-
+        buff[CKPb]=ckpPWM;
         //printf("ckpPWM: %.4f us\n",ckpPWM);
 
        
 
         //Volumetric Efficiency 
         interpolation(pressure,RPM); //Gets the exact VE value
+        buff[VEb]=VE_Value;
         //printf("Volumetric Efficiency: %.2f\n",VE_Value);
 
 
         //Airmass
         airmass = (Vengine*VE_Value*pressure)/(UniGas*IAT*cylinder); 
+        buff[Airmassb]=airmass;
         //printf("airmass: %.4f (g/cyl)\n",airmass);
 
         //Fuelmass
         fuelmass = (airmass)/(afr); 
+        buff[Fuelmassb]=fuelmass;
        // printf("fuelmass: %.4f (g/cyl)\n\n",fuelmass); 
 
         //Fuel injector
@@ -412,7 +424,8 @@ void main_Readings(void *pvParameter)
         // injCycle = 60/RPM;
         // injPulseTime= (fuelmass/staticFlow + openTime)*1000; //the open time
         injDuty = TPS;
-
+        buff[Freqb]=freq;
+        buff[DutyCicleb]=injDuty;
         //printf("Frequency: %.4f\n",freq);
         // printf("Injecor Pulse Time: %.4fms\n",injPulseTime);
         //printf("Injector Duty Cyle: %.4f\n",injDuty);
